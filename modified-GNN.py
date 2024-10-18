@@ -180,8 +180,13 @@ def load_to_stellargraph(input_features):
     graphs_list = []
     for each_sample in range(np.shape(input_features)[0]):
         each_graph_feature_array = input_features[each_sample]
-        each_graph = StellarGraph(each_graph_feature_array, edges)
+        
+        # Create a dictionary for node features
+        node_features = {i: each_graph_feature_array[i] for i in range(len(each_graph_feature_array))}
+        
+        each_graph = StellarGraph(node_features, edges)
         graphs_list.append(each_graph)
+    
     logger.info(f"A graph sample: {graphs_list[0].info()}")
 
     summary = pd.DataFrame(
@@ -192,37 +197,33 @@ def load_to_stellargraph(input_features):
     return graphs_list
 
 def convert_label_into_one_hot(label):
-    shape = (label.size, label.max() + 1)
-    one_hot_label = np.zeros(shape)
-    rows = np.arange(label.size)
-    one_hot_label[rows, label] = 1
-
+    one_hot_label = np.zeros((len(label), 6), dtype=np.float32)
+    for position in range(len(label)):
+        one_hot_label[position][label[position]] = 1
     return one_hot_label
 
 def graph_classificaiton_model(generator):
-    # Initialize GAT without dropout argument
+    # Create GAT model
     gc_model = GAT(
-        layer_sizes=[64, 64],
-        activations=["relu", "relu"],
-        generator=generator,
-        attn_heads=8  # Use multiple attention heads
+        layer_sizes=[8, 8],
+        activations=["relu", "softmax"],
+        n_out=6,
     )
 
-    x_inp, x_out = gc_model.in_out_tensors()
+    # Create the input layer
+    x_in = generator.node_features()  # input layer
 
-    # Apply dropout after GAT layer
-    x_out = Dropout(0.3)(x_out)
+    # Output layer
+    predictions = gc_model(x_in)
+    
+    # Create Keras model
+    model = Model(inputs=x_in, outputs=predictions)
 
-    # Dense layers with batch normalization
-    predictions = Dense(units=32, activation="relu")(x_out)
-    predictions = BatchNormalization()(predictions)
-    predictions = Dense(units=6, activation="softmax")(predictions)
-
-    # Create the Keras model
-    model = Model(inputs=x_inp, outputs=predictions)
-    model.compile(optimizer=Adam(lr), loss=categorical_crossentropy, metrics=["acc"])
-
-    model.summary(print_fn=logger.info)
+    model.compile(
+        optimizer=Adam(lr),
+        loss=categorical_crossentropy,
+        metrics=["acc"]
+    )
     return model
 
 if __name__ == '__main__':
