@@ -7,7 +7,7 @@ import pandas as pd
 
 import stellargraph as sg
 from stellargraph import StellarGraph
-from stellargraph.mapper import PaddedGraphGenerator
+from stellargraph.mapper import FullBatchNodeGenerator
 from stellargraph.layer import GAT
 from stellargraph import StellarGraph
 
@@ -29,7 +29,6 @@ logger = logging.getLogger()
 
 np.random.seed(1)
 tf.random.set_seed(1)
-
 
 activities = {
     0: 'WALKING',
@@ -68,16 +67,17 @@ def main():
         # load numpy array to StellarGraph objects, each with nodes features and graph structures
         graphs_list = load_to_stellargraph(input_features)
         # create a data generator in order to feed data into the tf.Keras model
-        generator = PaddedGraphGenerator(graphs=graphs_list)
+        generator = FullBatchNodeGenerator(StellarGraph(graphs_list))
+
         sample_index = [i for i in range(input_features.shape[0])]
         # split train and validation dataset as 80%, 20%
         split_train_valid = int(len(sample_index) * 0.8)
 
         if data == "train":
-            train_gen = generator.flow(sample_index[:split_train_valid], targets = label[:split_train_valid], batch_size = batch_size)
-            valid_gen = generator.flow(sample_index[split_train_valid:], targets = label[split_train_valid:], batch_size = batch_size)
+            train_gen = generator.flow(sample_index[:split_train_valid], targets=label[:split_train_valid])
+            valid_gen = generator.flow(sample_index[split_train_valid:], targets=label[split_train_valid:])
         elif data == "test":
-            test_gen = generator.flow(sample_index, targets = label, batch_size = batch_size)
+            test_gen = generator.flow(sample_index, targets=label)
 
     model = graph_classificaiton_model(generator)
     # apply early stopping and save the best model
@@ -98,8 +98,7 @@ def main():
     tflite_model = converter.convert()
     # save the model as .tflite
     with open('gnn_model/gnn.tflite', 'wb') as f:
-      f.write(tflite_model)
-
+        f.write(tflite_model)
 
     # try to do inference with tflite model using python
     interpreter = tf.lite.Interpreter(model_content=tflite_model)
@@ -193,7 +192,7 @@ def load_to_stellargraph(input_features):
     return graphs_list
 
 def convert_label_into_one_hot(label):
-    shape = (label.size, label.max()+1)
+    shape = (label.size, label.max() + 1)
     one_hot_label = np.zeros(shape)
     rows = np.arange(label.size)
     one_hot_label[rows, label] = 1
@@ -211,15 +210,11 @@ def graph_classificaiton_model(generator):
 
     x_inp, x_out = gc_model.in_out_tensors()
 
-    # Apply dropout after GAT layer output
+    # Apply dropout after GAT layer
     x_out = Dropout(0.3)(x_out)
 
-    # Modified Dense layers with BatchNormalization
-    predictions = Dense(units=128, activation="relu")(x_out)
-    predictions = BatchNormalization()(predictions)
-    predictions = Dense(units=64, activation="relu")(predictions)
-    predictions = BatchNormalization()(predictions)
-    predictions = Dense(units=32, activation="relu")(predictions)
+    # Dense layers with batch normalization
+    predictions = Dense(units=32, activation="relu")(x_out)
     predictions = BatchNormalization()(predictions)
     predictions = Dense(units=6, activation="softmax")(predictions)
 
