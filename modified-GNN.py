@@ -9,13 +9,11 @@ import stellargraph as sg
 from stellargraph import StellarGraph
 from stellargraph.mapper import FullBatchNodeGenerator
 from stellargraph.layer import GAT
-from stellargraph import StellarGraph
 
 from tensorflow.keras import Model
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.layers import Dense, BatchNormalization, Dropout
 from tensorflow.keras.losses import categorical_crossentropy
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import tensorflow as tf
 
 import logging
@@ -56,21 +54,24 @@ features_number = 9
 
 lr = 0.001
 epochs = 200
-batch_size = 100
 
 def main():
     for data in ['train', 'test']:
-        # convert training and testing data into numpy array
+        # Convert training and testing data into numpy array
         input_features, label = convert_data_into_numpy(data)
-        # convert numpy array label to one-hot label (no order)
+        # Convert numpy array label to one-hot label (no order)
         label = convert_label_into_one_hot(label)
-        # load numpy array to StellarGraph objects, each with nodes features and graph structures
+        # Load numpy array to StellarGraph object, each with nodes features and graph structures
         graphs_list = load_to_stellargraph(input_features)
-        # create a data generator in order to feed data into the tf.Keras model
-        generator = FullBatchNodeGenerator(StellarGraph(graphs_list))
 
-        sample_index = [i for i in range(input_features.shape[0])]
-        # split train and validation dataset as 80%, 20%
+        # We assume you want to generate graphs from a list, but for training,
+        # you will only use the first graph. If you need to train on multiple graphs,
+        # you may need to adjust this approach accordingly.
+        main_graph = graphs_list[0]  # Use the first graph as an example
+        generator = FullBatchNodeGenerator(main_graph)
+
+        sample_index = np.arange(input_features.shape[0])
+        # Split train and validation dataset as 80%, 20%
         split_train_valid = int(len(sample_index) * 0.8)
 
         if data == "train":
@@ -80,54 +81,22 @@ def main():
             test_gen = generator.flow(sample_index, targets=label)
 
     model = graph_classificaiton_model(generator)
-    # apply early stopping and save the best model
-    es = EarlyStopping(monitor="val_loss", min_delta=0, patience=50, restore_best_weights=True)
+    # Apply early stopping and save the best model
+    es = EarlyStopping(monitor="val_loss", patience=50, restore_best_weights=True)
     mc = ModelCheckpoint('gnn_model', monitor='val_loss', mode='min', save_best_only=True)
     history = model.fit(train_gen, epochs=epochs, verbose=1, validation_data=valid_gen, shuffle=True, callbacks=[es, mc])
-    # evaluate on testing dataset
+    # Evaluate on testing dataset
     loss, test_acc = model.evaluate(test_gen, verbose=1)
     logger.info(f"\nLoss on testing dataset: {loss}")
     logger.info(f"Accuracy on testing dataset: {test_acc}")
 
-    # plot
+    # Plot the training history
     plot(history, "acc", "accuracy")
     plot(history, "loss", "loss")
-
-    # convert the model to a TFLiteConverter object
-    converter = tf.lite.TFLiteConverter.from_saved_model('gnn_model/')
-    tflite_model = converter.convert()
-    # save the model as .tflite
-    with open('gnn_model/gnn.tflite', 'wb') as f:
-        f.write(tflite_model)
-
-    # try to do inference with tflite model using python
-    interpreter = tf.lite.Interpreter(model_content=tflite_model)
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-
-    input_shape_0 = input_details[0]['shape']
-    input_data_0 = np.array(np.random.random_sample(input_shape_0), dtype=np.float32)
-    interpreter.set_tensor(input_details[0]['index'], input_data_0)
-
-    input_shape_1 = input_details[1]['shape']
-    input_data_1 = np.array(np.random.random_sample(input_shape_1), dtype=np.float32)
-    interpreter.set_tensor(input_details[1]['index'], input_data_1)
-
-    input_shape_2 = input_details[2]['shape']
-    input_data_2 = np.array(np.random.random_sample(input_shape_2), dtype=np.bool_)
-    interpreter.set_tensor(input_details[2]['index'], input_data_2)
-    interpreter.invoke()
-    output_data = interpreter.get_tensor(output_details[0]['index'])
-    assert len(output_data[0]) == 6
 
 def plot(history, metrics, full_name):
     plt.plot(history.history[metrics])
     plt.plot(history.history[f'val_{metrics}'])
-    if full_name == "accuracy":
-        plt.yticks(np.arange(0.2, 1.1, 0.1))
-    else:
-        plt.yticks(np.arange(0, 1.5, 0.2))
     plt.title(f'GNN {full_name}')
     plt.ylabel(full_name)
     plt.xlabel('epoch')
@@ -139,16 +108,16 @@ def convert_data_into_numpy(file_name):
     df = pd.DataFrame() 
     data_path = f"UCI HAR Dataset/{file_name}"
 
-    # labels
+    # Labels
     label = []
     with open(f"{data_path}/y_{file_name}.txt", "r") as f:
-        for position, line in enumerate(f):
+        for line in f:
             if len(line) > 0:
                 label.append(int(line) - 1)
     label = np.array(label)
     logger.info(f"Number of {file_name} samples: {len(label)}")
 
-    # load input features, shape: (7352, 128, 9)
+    # Load input features, shape: (7352, 128, 9)
     input_features = np.zeros((len(label), timestep, features_number), dtype=np.float32)
     logger.info(f"Shape of input features: {np.shape(input_features)}")
 
@@ -156,13 +125,11 @@ def convert_data_into_numpy(file_name):
     for filename in os.listdir(input_features_file_path):
         with open(f"{input_features_file_path}/{filename}", "r") as f:
             for position, line in enumerate(f):
-                values_list = line.split(" ")
-                values_list = [float(x) for x in line.split(" ") if len(x) != 0]
+                values_list = line.split()
                 assert len(values_list) == timestep
                 feature_name = '_'.join(x for x in filename.split('_')[:-1])
                 feature_order = features[feature_name]
-                for each_timestamp in range(timestep):
-                    input_features[position][each_timestamp][feature_order] = values_list[each_timestamp]
+                input_features[position, :, feature_order] = np.array(values_list, dtype=np.float32)
 
     assert len(input_features) == len(label)
 
@@ -170,23 +137,21 @@ def convert_data_into_numpy(file_name):
 
 def load_to_stellargraph(input_features):
     # Create graph edges
-    source_node = []
-    target_node = []
-    for node in range(timestep - 1):
-        source_node.append(node)
-        target_node.append(node + 1)
+    source_node = np.arange(timestep - 1)
+    target_node = np.arange(1, timestep)
+
     edges = pd.DataFrame({"source": source_node, "target": target_node})
 
     graphs_list = []
     for each_sample in range(np.shape(input_features)[0]):
         each_graph_feature_array = input_features[each_sample]
-        
-        # Create a DataFrame for node features
-        node_features = pd.DataFrame(each_graph_feature_array, index=np.arange(len(each_graph_feature_array)))
 
-        each_graph = StellarGraph(node_features, edges)
+        # Create a DataFrame for node features
+        node_features = pd.DataFrame(each_graph_feature_array, index=np.arange(timestep))
+
+        each_graph = StellarGraph(node_features=node_features, edges=edges)
         graphs_list.append(each_graph)
-    
+
     logger.info(f"A graph sample: {graphs_list[0].info()}")
 
     summary = pd.DataFrame(
@@ -211,11 +176,11 @@ def graph_classificaiton_model(generator):
     )
 
     # Create the input layer
-    x_in = generator.node_features()  # input layer
+    x_in = generator.node_features()  # Input layer
 
     # Output layer
     predictions = gc_model(x_in)
-    
+
     # Create Keras model
     model = Model(inputs=x_in, outputs=predictions)
 
