@@ -169,7 +169,7 @@ def convert_data_into_numpy(file_name):
     return input_features, label
 
 def load_to_stellargraph(input_features):
-    # create graph edges
+    # Create graph edges
     source_node = []
     target_node = []
     for node in range(timestep - 1):
@@ -181,9 +181,9 @@ def load_to_stellargraph(input_features):
     for each_sample in range(np.shape(input_features)[0]):
         each_graph_feature_array = input_features[each_sample]
         
-        # Create a dictionary for node features
-        node_features = {i: each_graph_feature_array[i] for i in range(len(each_graph_feature_array))}
-        
+        # Create a DataFrame for node features
+        node_features = pd.DataFrame(each_graph_feature_array, index=np.arange(len(each_graph_feature_array)))
+
         each_graph = StellarGraph(node_features, edges)
         graphs_list.append(each_graph)
     
