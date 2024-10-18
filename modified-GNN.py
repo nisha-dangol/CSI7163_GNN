@@ -13,7 +13,7 @@ from stellargraph import StellarGraph
 
 from tensorflow.keras import Model
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.layers import Dense, BatchNormalization
+from tensorflow.keras.layers import Dense, BatchNormalization, Dropout
 from tensorflow.keras.losses import categorical_crossentropy
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import tensorflow as tf
@@ -30,7 +30,7 @@ logger = logging.getLogger()
 np.random.seed(1)
 tf.random.set_seed(1)
 
-# Rest of the code follows as before
+
 activities = {
     0: 'WALKING',
     1: 'WALKING_UPSTAIRS',
@@ -39,7 +39,6 @@ activities = {
     4: 'STANDING',
     5: 'LAYING',
 }
-
 
 features = {
     "body_acc_x": 0, 
@@ -51,8 +50,7 @@ features = {
     "total_acc_x": 6,
     "total_acc_y": 7,
     "total_acc_z": 8
-    }
-
+}
 
 timestep = 128
 features_number = 9
@@ -61,56 +59,53 @@ lr = 0.001
 epochs = 200
 batch_size = 100
 
-
-
 def main():
     for data in ['train', 'test']:
+        # convert training and testing data into numpy array
         input_features, label = convert_data_into_numpy(data)
+        # convert numpy array label to one-hot label (no order)
         label = convert_label_into_one_hot(label)
+        # load numpy array to StellarGraph objects, each with nodes features and graph structures
         graphs_list = load_to_stellargraph(input_features)
+        # create a data generator in order to feed data into the tf.Keras model
         generator = PaddedGraphGenerator(graphs=graphs_list)
         sample_index = [i for i in range(input_features.shape[0])]
+        # split train and validation dataset as 80%, 20%
         split_train_valid = int(len(sample_index) * 0.8)
 
         if data == "train":
-            train_gen = generator.flow(sample_index[:split_train_valid], targets=label[:split_train_valid], batch_size=batch_size)
-            valid_gen = generator.flow(sample_index[split_train_valid:], targets=label[split_train_valid:], batch_size=batch_size)
+            train_gen = generator.flow(sample_index[:split_train_valid], targets = label[:split_train_valid], batch_size = batch_size)
+            valid_gen = generator.flow(sample_index[split_train_valid:], targets = label[split_train_valid:], batch_size = batch_size)
         elif data == "test":
-            test_gen = generator.flow(sample_index, targets=label, batch_size=batch_size)
+            test_gen = generator.flow(sample_index, targets = label, batch_size = batch_size)
 
     model = graph_classificaiton_model(generator)
-    
+    # apply early stopping and save the best model
     es = EarlyStopping(monitor="val_loss", min_delta=0, patience=50, restore_best_weights=True)
     mc = ModelCheckpoint('gnn_model', monitor='val_loss', mode='min', save_best_only=True)
-    lr_scheduler = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, verbose=1, min_lr=1e-5)
-
-    history = model.fit(train_gen, epochs=epochs, verbose=1, validation_data=valid_gen, shuffle=True, callbacks=[es, mc, lr_scheduler])
-    
+    history = model.fit(train_gen, epochs=epochs, verbose=1, validation_data=valid_gen, shuffle=True, callbacks=[es, mc])
+    # evaluate on testing dataset
     loss, test_acc = model.evaluate(test_gen, verbose=1)
     logger.info(f"\nLoss on testing dataset: {loss}")
     logger.info(f"Accuracy on testing dataset: {test_acc}")
 
+    # plot
     plot(history, "acc", "accuracy")
     plot(history, "loss", "loss")
 
+    # convert the model to a TFLiteConverter object
     converter = tf.lite.TFLiteConverter.from_saved_model('gnn_model/')
     tflite_model = converter.convert()
-    
+    # save the model as .tflite
     with open('gnn_model/gnn.tflite', 'wb') as f:
-        f.write(tflite_model)
+      f.write(tflite_model)
 
 
+    # try to do inference with tflite model using python
     interpreter = tf.lite.Interpreter(model_content=tflite_model)
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
-    input_signature_list = interpreter._get_full_signature_list() 
-
-    logger.info(f"\nTFLite model input details:")
-    for each_input_tensor in input_details:
-        logger.info(f"\n{each_input_tensor}")
-    logger.info(f"\nTFLite model output details: \n{output_details}")
-    logger.info(f"\nTFLite model signature details: \n{input_signature_list}")
 
     input_shape_0 = input_details[0]['shape']
     input_data_0 = np.array(np.random.random_sample(input_shape_0), dtype=np.float32)
@@ -127,7 +122,6 @@ def main():
     output_data = interpreter.get_tensor(output_details[0]['index'])
     assert len(output_data[0]) == 6
 
-
 def plot(history, metrics, full_name):
     plt.plot(history.history[metrics])
     plt.plot(history.history[f'val_{metrics}'])
@@ -142,11 +136,11 @@ def plot(history, metrics, full_name):
     plt.savefig(f"plot/GNN_{full_name}.jpeg")
     plt.close()
 
-
 def convert_data_into_numpy(file_name):
     df = pd.DataFrame() 
     data_path = f"UCI HAR Dataset/{file_name}"
 
+    # labels
     label = []
     with open(f"{data_path}/y_{file_name}.txt", "r") as f:
         for position, line in enumerate(f):
@@ -155,6 +149,7 @@ def convert_data_into_numpy(file_name):
     label = np.array(label)
     logger.info(f"Number of {file_name} samples: {len(label)}")
 
+    # load input features, shape: (7352, 128, 9)
     input_features = np.zeros((len(label), timestep, features_number), dtype=np.float32)
     logger.info(f"Shape of input features: {np.shape(input_features)}")
 
@@ -172,33 +167,10 @@ def convert_data_into_numpy(file_name):
 
     assert len(input_features) == len(label)
 
-    output_input_dict = dict()
-    for class_type in activities:
-        output_input_dict[class_type] = dict()
-        for each_feature in features:
-            output_input_dict[class_type][each_feature]= []
-
-    features_inverse = {v: k for k, v in features.items()}
-    for sample_index in range(len(input_features)):
-        for timestamp_index in range(len(input_features[sample_index])):
-            for feature_index in range(len(input_features[sample_index][timestamp_index])):
-                feature_name = features_inverse[feature_index]
-                output_input_dict[label[sample_index]][feature_name].append(input_features[sample_index][timestamp_index][feature_index])
-
-    for class_type in activities:
-        for each_feature in features:
-            plt.plot(np.arange(0, 50), output_input_dict[class_type][each_feature][:50], label=each_feature)
-        plt.legend(title=activities[class_type], title_fontsize=10, loc='center left', bbox_to_anchor=(1, 0.5))
-        plt.ylabel('values')
-        plt.xlabel('timestamps')
-        plt.savefig(f"plot/{activities[class_type]}.jpeg", bbox_inches='tight')
-        plt.close()
-
     return input_features, label
 
-
-
 def load_to_stellargraph(input_features):
+    # create graph edges
     source_node = []
     target_node = []
     for node in range(timestep - 1):
@@ -217,28 +189,31 @@ def load_to_stellargraph(input_features):
         [(g.number_of_nodes(), g.number_of_edges()) for g in graphs_list],
         columns=["nodes", "edges"],
     )
-    logger.info(f"\nSummary statistics of the node and edge structure: \n{summary.describe()}")
-
+    logger.info(f"All graphs summary: {summary.describe().round(1)}")
     return graphs_list
 
-
-
 def convert_label_into_one_hot(label):
-    return np.array(pd.get_dummies(label))
+    shape = (label.size, label.max()+1)
+    one_hot_label = np.zeros(shape)
+    rows = np.arange(label.size)
+    one_hot_label[rows, label] = 1
 
+    return one_hot_label
 
 def graph_classificaiton_model(generator):
-    # Use GAT instead of GCN
+    # Initialize GAT without dropout argument
     gc_model = GAT(
         layer_sizes=[64, 64],
         activations=["relu", "relu"],
         generator=generator,
-        attn_heads=8,  # Use multiple attention heads
-        dropout=0.3  # Increased dropout rate
+        attn_heads=8  # Use multiple attention heads
     )
 
     x_inp, x_out = gc_model.in_out_tensors()
-    
+
+    # Apply dropout after GAT layer output
+    x_out = Dropout(0.3)(x_out)
+
     # Modified Dense layers with BatchNormalization
     predictions = Dense(units=128, activation="relu")(x_out)
     predictions = BatchNormalization()(predictions)
@@ -248,13 +223,12 @@ def graph_classificaiton_model(generator):
     predictions = BatchNormalization()(predictions)
     predictions = Dense(units=6, activation="softmax")(predictions)
 
-    # create the Keras model
+    # Create the Keras model
     model = Model(inputs=x_inp, outputs=predictions)
     model.compile(optimizer=Adam(lr), loss=categorical_crossentropy, metrics=["acc"])
 
     model.summary(print_fn=logger.info)
     return model
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
